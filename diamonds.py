@@ -4,8 +4,10 @@ import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
+from sklearn.decomposition import PCA
 from sklearn.metrics import root_mean_squared_error, r2_score
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
@@ -39,6 +41,86 @@ def prepare_data(df: pd.DataFrame, scaler: StandardScaler):
 def split_data(x, y, test_size = 0.2):
     return train_test_split(x, y, test_size=test_size)
 
+def PCA_graph(inputs, values, pca, is_prediction = False):
+
+    inputs_pca = pca.fit_transform(inputs)
+    fig = plt.figure(figsize=(12,12))
+    features = ['carat','depth','table','x', 'y', 'z', 'cut', 'color', 'clarity']
+    colors = ["red","orange","brown","magenta","gray","black","gold","pink","cyan"]
+
+    print(pca.components_[:])
+
+    plt.scatter(inputs_pca[:, 0], inputs_pca[:, 1], c=values)
+    if is_prediction:
+        plt.colorbar(label = 'Relative Predicted Price')
+    else:
+        plt.colorbar(label = 'Relative Price')
+    for i, feature in enumerate(features):
+        scale = 5
+        extra_x = 5
+        extra_y = 10
+
+        loading = pca.components_[:, i]
+        plt.arrow(0, 0, loading[0] * scale, loading[1] * scale,
+                  color=colors[i], width=0.01, head_width=0.1, length_includes_head=True)
+
+        if feature == 'color' or feature == 'clarity' or feature == 'cut':
+            extra_x = 0.5
+            extra_y = 0.5
+        elif feature == 'table':
+            extra_y = 1
+
+        plt.text(
+            loading[0] * (scale + extra_x),
+            loading[1] * (scale + extra_y),
+            feature,
+            color=colors[i],
+            fontsize=12,
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='none')
+        )
+    plt.xlabel('PC1 (~Size vs. ~Cut/Clarity)')
+    plt.ylabel('PC2 (~Color vs. ~Clarity)')
+    plt.show()
+    plt.close()
+
+
+    '''
+    center = inputs_pca.mean(axis=0)
+    ax = fig.add_subplot(1, 1, 1, projection='3d')
+    scatter = ax.scatter(inputs_pca[:, 0],
+                         inputs_pca[:, 1],
+                         inputs_pca[:, 2],
+                         c=values, cmap='viridis', alpha=0.6, depthshade = False, zorder=1)
+    fig.colorbar(scatter, ax=ax, pad=0.1, label = 'Relative Price')
+    ax.set_xlabel('PC1')
+    ax.set_ylabel('PC2')
+    ax.set_zlabel('PC3')
+    for i, feature in enumerate(features):
+        loading = pca.components_[:, i]
+
+        ax.quiver(center[0], center[1], center[2],
+                  loading[0]*scale,
+                  loading[1]*scale,
+                  loading[2]*scale,
+                  color='red',
+                  arrow_length_ratio=0.2,
+                  zorder=1000)
+
+        ax.text(loading[0]*(scale+extra),
+                loading[1]*(scale+extra),
+                loading[2]*(scale+extra),
+                s = feature,
+                color='red',
+                fontsize=12,
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'),
+                zorder=100)
+
+    ax.view_init(elev=20, azim=135)
+    ax.dist = 1
+    fig.show()
+    plt.close()
+    '''
+
 def run_epoch(model, dataloader, optimizer, criterion, scheduler, is_train = False):
     avg_loss = 0
     if is_train:
@@ -49,8 +131,8 @@ def run_epoch(model, dataloader, optimizer, criterion, scheduler, is_train = Fal
     for idx, (x,y) in enumerate(dataloader):
         if is_train:
             optimizer.zero_grad()
-        x = x.to('cuda')
-        y = y.to('cuda').unsqueeze(1)
+        x = x.to(device)
+        y = y.to(device).unsqueeze(1)
 
         output = model(x)
         error = criterion(output, y)
@@ -90,15 +172,20 @@ class BaseModel(nn.Module):
     def forward(self, x):
         return self.linear(x)
 
+
+device = 'cpu'
 n_epochs = 50
-batch_size = 250
+batch_size = 100
 scaler = StandardScaler()
-input,price,df = prepare_data(fetch_data(), scaler)
+pca = PCA(n_components = 3)
+input, price, df = prepare_data(fetch_data(), scaler)
 x_train, x_test, y_train, y_test = split_data(input,price)
 train_dataset = TableDataset(x_train, y_train)
 test_dataset = TableDataset(x_test, y_test)
 
-base_model = BaseModel().to('cuda')
+PCA_graph(input, price, pca)
+
+base_model = BaseModel().to(device)
 
 criterion = nn.MSELoss(reduction='mean')
 base_optimizer = optim.Adam(base_model.parameters(), lr=0.01)
@@ -109,13 +196,13 @@ dataloader_test = DataLoader(test_dataset, batch_size = batch_size, shuffle = Fa
 
 for epoch in range(n_epochs):
     train_loss, learning_rate = run_epoch(base_model, dataloader_train, base_optimizer, criterion, scheduler, is_train = True)
-    print(f'Epoch {epoch + 1} / {n_epochs}, Average loss per batch: {train_loss:.4f}, Learning_Rate: {learning_rate:.4f}')
+    #print(f'Epoch {epoch + 1} / {n_epochs}, Average loss per batch: {train_loss:.4f}, Learning_Rate: {learning_rate:.4f}')
 
 predictions = np.array([])
 base_model.eval()
-for i, (x,y) in enumerate(dataloader_test):
-    x = x.to('cuda')
-    y = y.to('cuda').unsqueeze(1)
+for i, (x, y) in enumerate(dataloader_test):
+    x = x.to(device)
+    y = y.to(device).unsqueeze(1)
     out = base_model(x)
     error = criterion(out, y)
     predictions = np.append(predictions, out.cpu().detach().numpy())
